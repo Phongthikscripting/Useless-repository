@@ -1,0 +1,9 @@
+services:
+  - type: web
+    name: gamatoto-bot
+    runtime: python
+    buildCommand: "apt-get install -y libsodium-dev && pip install -r requirements.txt"
+    startCommand: "python bot.py"
+    envVars:
+      - key: DISCORD_TOKEN
+        sync: false
