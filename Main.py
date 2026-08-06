@@ -6,8 +6,6 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from flask import Flask
-import yt_dlp
-
 # ── Flask (keeps bot alive via UptimeRobot) ──────────────────────────────────
 app = Flask(__name__)
 
@@ -18,26 +16,6 @@ def home():
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
-
-# ── YouTube audio ─────────────────────────────────────────────────────────────
-GAMATOTO_URL = "https://youtu.be/MnwwRAtlbic"
-
-YTDL_OPTIONS = {
-    "format": "bestaudio/best",
-    "noplaylist": True,
-    "quiet": True,
-}
-
-FFMPEG_OPTIONS = {
-    "before_options": "-reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 5",
-    "options": "-vn",
-}
-
-def get_audio_source(url: str) -> discord.FFmpegPCMAudio:
-    with yt_dlp.YoutubeDL(YTDL_OPTIONS) as ytdl:
-        info = ytdl.extract_info(url, download=False)
-        audio_url = info["url"]
-    return discord.FFmpegPCMAudio(audio_url, **FFMPEG_OPTIONS)
 
 # ── Trigger storage (JSON file) ───────────────────────────────────────────────
 TRIGGERS_FILE = "triggers.json"
@@ -175,9 +153,24 @@ async def invitetovoicechannel(interaction: discord.Interaction):
         if vc.is_playing():
             vc.stop()
 
-        # Play Gamatoto theme
-        source = get_audio_source(GAMATOTO_URL)
-        vc.play(discord.PCMVolumeTransformer(source, volume=0.5))
+        # Play Gamatoto theme on loop
+        def play_loop(error):
+            if error:
+                print(f"❌ Player error: {error}")
+                return
+            if vc.is_connected():
+                source = discord.PCMVolumeTransformer(
+                    discord.FFmpegPCMAudio("gamatoto.mp3"), volume=0.5
+                )
+                vc.play(source, after=play_loop)
+
+        if os.path.exists("gamatoto.mp3"):
+            source = discord.PCMVolumeTransformer(
+                discord.FFmpegPCMAudio("gamatoto.mp3"), volume=0.5
+            )
+            vc.play(source, after=play_loop)
+        else:
+            print("⚠️ gamatoto.mp3 not found")
 
         await interaction.followup.send(
             f"✅ Gamatoto is going to work in **{channel.name}**! 🐸⛏️", ephemeral=True
