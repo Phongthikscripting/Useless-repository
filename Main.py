@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import asyncio
 import threading
 import discord
 from discord import app_commands
@@ -148,6 +149,9 @@ async def invitetovoicechannel(interaction: discord.Interaction):
             await vc.move_to(channel)
         else:
             vc = await channel.connect()
+
+        # Wait for voice connection to fully establish
+        await asyncio.sleep(1)
 
         # Stop anything currently playing
         if vc.is_playing():
