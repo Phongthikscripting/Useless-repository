@@ -74,7 +74,12 @@ async def addtrigger(interaction: discord.Interaction, word: str, response: str)
             f"⚠️ Trigger already exists: **{word}**", ephemeral=True
         )
         return
-    triggers.append({"word": word, "response": response, "active": True})
+    triggers.append({
+        "word": word,
+        "response": response,
+        "active": True,
+        "added_by": interaction.user.display_name,   # 👈 lưu người tạo
+    })
     save_triggers(triggers)
     await interaction.response.send_message(
         f"✅ Added: **{word}** → *{response}*", ephemeral=True
@@ -122,10 +127,11 @@ async def triggerlist(interaction: discord.Interaction):
             "📭 No triggers yet. Use `/addtrigger`!", ephemeral=True
         )
         return
-    lines = [
-        f"• **{t['word']}**: {t['response']}{'' if t.get('active', True) else ' (Disabled)'}"
-        for t in triggers
-    ]
+    lines = []
+    for t in triggers:
+        status = "" if t.get("active", True) else " (Disabled)"
+        by = t.get("added_by", "unknown")   # 👈 trigger cũ chưa có field này
+        lines.append(f"• **{t['word']}**: {t['response']}{status} — *by {by}*")
     await interaction.response.send_message(
         "**Triggers:**\n" + "\n".join(lines), ephemeral=True
     )
