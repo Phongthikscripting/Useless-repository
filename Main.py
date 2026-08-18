@@ -12,7 +12,7 @@ app = Flask(__name__)
 
 @app.route("/")
 def home():
-    return "bot is online"
+    return "bot online?"
 
 def run_flask():
     port = int(os.environ.get("PORT", 8080))
