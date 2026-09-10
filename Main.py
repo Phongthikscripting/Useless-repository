@@ -88,7 +88,7 @@ async def tempmail(interaction: discord.Interaction):
         description=f"**Email:** `{email}`\n\n💡 Không cần mật khẩu!\nDùng `/checkmail` để kiểm tra thư đến.",
         color=discord.Color.green()
     )
-    embed.set_footer(text="️ Email tự động xóa sau 1 giờ không hoạt động")
+    embed.set_footer(text="⚠️ Email tự động xóa sau 1 giờ không hoạt động")
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="checkmail", description="📬 Kiểm tra hộp thư tạm thời")
@@ -102,19 +102,24 @@ async def checkmail(interaction: discord.Interaction):
 
     url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={user_data['login']}&domain={user_data['domain']}"
     
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            if resp.status == 200:
-                messages = await resp.json()
-                if not messages:
-                    await interaction.followup.send(f" Hộp thư `{user_data['email']}` đang trống.", ephemeral=True)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    messages = await resp.json()
+                    if not messages:
+                        await interaction.followup.send(f"📭 Hộp thư `{user_data['email']}` đang trống.", ephemeral=True)
+                    else:
+                        msg_list = "\n".join([f"**{m['subject']}**\n  ID: `{m['id']}` | Từ: {m['from']}" for m in messages[:5]])
+                        embed = discord.Embed(title=f"📬 Hộp thư: {user_data['email']}", description=msg_list, color=discord.Color.blue())
+                        embed.set_footer(text="Dùng /readmail <id> để đọc nội dung")
+                        await interaction.followup.send(embed=embed, ephemeral=True)
                 else:
-                    msg_list = "\n".join([f"**{m['subject']}**\n  ID: `{m['id']}` | Từ: {m['from']}" for m in messages[:5]])
-                    embed = discord.Embed(title=f"📬 Hộp thư: {user_data['email']}", description=msg_list, color=discord.Color.blue())
-                    embed.set_footer(text="Dùng /readmail <id> để đọc nội dung")
-                    await interaction.followup.send(embed=embed, ephemeral=True)
-            else:
-                await interaction.followup.send("❌ Lỗi khi kết nối API.", ephemeral=True)
+                    await interaction.followup.send(f"❌ API trả về lỗi: {resp.status}", ephemeral=True)
+    except asyncio.TimeoutError:
+        await interaction.followup.send("⏱️ Timeout: API không phản hồi sau 10 giây.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Lỗi kết nối: {str(e)[:200]}", ephemeral=True)
 
 @bot.tree.command(name="readmail", description="📖 Đọc nội dung tin nhắn")
 @app_commands.describe(message_id="ID của tin nhắn (lấy từ /checkmail)")
@@ -128,18 +133,23 @@ async def readmail(interaction: discord.Interaction, message_id: str):
 
     url = f"https://www.1secmail.com/api/v1/?action=readMessage&login={user_data['login']}&domain={user_data['domain']}&id={message_id}"
     
-    async with aiohttp.ClientSession() as session:
-        async with session.get(url) as resp:
-            if resp.status == 200:
-                msg = await resp.json()
-                content = msg.get('textBody', msg.get('htmlBody', 'Không có nội dung'))[:1500]
-                
-                embed = discord.Embed(title=f"📧 {msg.get('subject', 'No Subject')}", description=content, color=discord.Color.purple())
-                embed.add_field(name=" Từ", value=msg.get('from', 'N/A'), inline=True)
-                embed.add_field(name="📅 Ngày", value=msg.get('date', 'N/A'), inline=True)
-                await interaction.followup.send(embed=embed, ephemeral=True)
-            else:
-                await interaction.followup.send(" Không tìm thấy tin nhắn hoặc ID sai.", ephemeral=True)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                if resp.status == 200:
+                    msg = await resp.json()
+                    content = msg.get('textBody', msg.get('htmlBody', 'Không có nội dung'))[:1500]
+                    
+                    embed = discord.Embed(title=f"📧 {msg.get('subject', 'No Subject')}", description=content, color=discord.Color.purple())
+                    embed.add_field(name="📨 Từ", value=msg.get('from', 'N/A'), inline=True)
+                    embed.add_field(name="📅 Ngày", value=msg.get('date', 'N/A'), inline=True)
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+                else:
+                    await interaction.followup.send(f"❌ API trả về lỗi: {resp.status}", ephemeral=True)
+    except asyncio.TimeoutError:
+        await interaction.followup.send("️ Timeout: API không phản hồi.", ephemeral=True)
+    except Exception as e:
+        await interaction.followup.send(f"❌ Lỗi kết nối: {str(e)[:200]}", ephemeral=True)
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 🔧 EXISTING TRIGGER COMMANDS
@@ -236,7 +246,7 @@ async def invitetovoicechannel(interaction: discord.Interaction):
         else:
             print("⚠️ gamatoto.mp3 not found")
 
-        await interaction.followup.send(f"✅ Gamatoto is going to work in **{channel.name}**! 🐸️", ephemeral=True)
+        await interaction.followup.send(f"✅ Gamatoto is going to work in **{channel.name}**! 🐸⛏️", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
