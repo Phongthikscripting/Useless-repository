@@ -11,7 +11,7 @@ from discord import app_commands
 from discord.ext import commands
 from flask import Flask
 
-# ── Flask (keeps bot alive via UptimeRobot/Render) ──────────────────────────
+# ── Flask (keeps bot alive via UptimeRobot/Render) ─────────────────────────
 app = Flask(__name__)
 
 @app.route("/")
@@ -22,7 +22,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)
 
-# ── Trigger storage (JSON file) ───────────────────────────────────────────────
+# ── Trigger storage (JSON file) ──────────────────────────────────────────────
 TRIGGERS_FILE = "triggers.json"
 
 def load_triggers():
@@ -35,8 +35,24 @@ def save_triggers(triggers):
     with open(TRIGGERS_FILE, "w") as f:
         json.dump(triggers, f, indent=2)
 
-# ── Temp Mail storage ─────────────────────────────────────────────────────────
-user_temp_mails = {}
+# ─ Temp Mail storage (persistent) ────────────────────────────────────────────
+TEMPMAIL_FILE = "tempmails.json"
+
+def load_temp_mails():
+    if os.path.exists(TEMPMAIL_FILE):
+        with open(TEMPMAIL_FILE, "r") as f:
+            return json.load(f)
+    return {}
+
+def save_temp_mail(user_id: str, data: dict):
+    mails = load_temp_mails()
+    mails[user_id] = data
+    with open(TEMPMAIL_FILE, "w") as f:
+        json.dump(mails, f, indent=2)
+
+def get_temp_mail(user_id: str):
+    mails = load_temp_mails()
+    return mails.get(user_id)
 
 # ── Discord bot ───────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
@@ -81,7 +97,8 @@ async def tempmail(interaction: discord.Interaction):
     domain = "1secmail.com"
     email = f"{username}@{domain}"
     
-    user_temp_mails[interaction.user.id] = {"login": username, "domain": domain, "email": email}
+    mail_data = {"login": username, "domain": domain, "email": email}
+    save_temp_mail(str(interaction.user.id), mail_data)
 
     embed = discord.Embed(
         title="✉️ Email Tạm Thời Đã Tạo",
@@ -92,13 +109,29 @@ async def tempmail(interaction: discord.Interaction):
     await interaction.response.send_message(embed=embed, ephemeral=True)
 
 @bot.tree.command(name="checkmail", description="📬 Kiểm tra hộp thư tạm thời")
-async def checkmail(interaction: discord.Interaction):
+@app_commands.describe(email="Email cần kiểm tra (để trống nếu dùng email đã tạo)")
+async def checkmail(interaction: discord.Interaction, email: str = None):
     await interaction.response.defer(ephemeral=True)
-    user_data = user_temp_mails.get(interaction.user.id)
     
-    if not user_data:
-        await interaction.followup.send("❌ Bạn chưa tạo email nào. Dùng `/tempmail` trước!", ephemeral=True)
-        return
+    user_id = str(interaction.user.id)
+    
+    # Nếu không nhập email, lấy từ file lưu
+    if not email:
+        user_data = get_temp_mail(user_id)
+        if not user_data:
+            await interaction.followup.send(
+                "❌ Bạn chưa tạo email nào. Dùng `/tempmail` để tạo!\n"
+                "Hoặc nhập email thủ công: `/checkmail email:your@email.com`", 
+                ephemeral=True
+            )
+            return
+    else:
+        # Parse email thủ công
+        if "@" not in email:
+            await interaction.followup.send("❌ Email không hợp lệ!", ephemeral=True)
+            return
+        parts = email.split("@")
+        user_data = {"login": parts[0], "domain": parts[1], "email": email}
 
     url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={user_data['login']}&domain={user_data['domain']}"
     
@@ -108,7 +141,7 @@ async def checkmail(interaction: discord.Interaction):
                 if resp.status == 200:
                     messages = await resp.json()
                     if not messages:
-                        await interaction.followup.send(f"📭 Hộp thư `{user_data['email']}` đang trống.", ephemeral=True)
+                        await interaction.followup.send(f" Hộp thư `{user_data['email']}` đang trống.", ephemeral=True)
                     else:
                         msg_list = "\n".join([f"**{m['subject']}**\n  ID: `{m['id']}` | Từ: {m['from']}" for m in messages[:5]])
                         embed = discord.Embed(title=f"📬 Hộp thư: {user_data['email']}", description=msg_list, color=discord.Color.blue())
@@ -117,19 +150,28 @@ async def checkmail(interaction: discord.Interaction):
                 else:
                     await interaction.followup.send(f"❌ API trả về lỗi: {resp.status}", ephemeral=True)
     except asyncio.TimeoutError:
-        await interaction.followup.send("⏱️ Timeout: API không phản hồi sau 10 giây.", ephemeral=True)
+        await interaction.followup.send("️ Timeout: API không phản hồi sau 10 giây.", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Lỗi kết nối: {str(e)[:200]}", ephemeral=True)
 
 @bot.tree.command(name="readmail", description="📖 Đọc nội dung tin nhắn")
-@app_commands.describe(message_id="ID của tin nhắn (lấy từ /checkmail)")
-async def readmail(interaction: discord.Interaction, message_id: str):
+@app_commands.describe(message_id="ID của tin nhắn (lấy từ /checkmail)", email="Email (để trống nếu dùng email đã tạo)")
+async def readmail(interaction: discord.Interaction, message_id: str, email: str = None):
     await interaction.response.defer(ephemeral=True)
-    user_data = user_temp_mails.get(interaction.user.id)
     
-    if not user_data:
-        await interaction.followup.send("❌ Bạn chưa tạo email nào.", ephemeral=True)
-        return
+    user_id = str(interaction.user.id)
+    
+    if not email:
+        user_data = get_temp_mail(user_id)
+        if not user_data:
+            await interaction.followup.send(" Bạn chưa tạo email nào. Dùng `/tempmail` để tạo!", ephemeral=True)
+            return
+    else:
+        if "@" not in email:
+            await interaction.followup.send("❌ Email không hợp lệ!", ephemeral=True)
+            return
+        parts = email.split("@")
+        user_data = {"login": parts[0], "domain": parts[1], "email": email}
 
     url = f"https://www.1secmail.com/api/v1/?action=readMessage&login={user_data['login']}&domain={user_data['domain']}&id={message_id}"
     
@@ -147,12 +189,12 @@ async def readmail(interaction: discord.Interaction, message_id: str):
                 else:
                     await interaction.followup.send(f"❌ API trả về lỗi: {resp.status}", ephemeral=True)
     except asyncio.TimeoutError:
-        await interaction.followup.send("️ Timeout: API không phản hồi.", ephemeral=True)
+        await interaction.followup.send("⏱️ Timeout: API không phản hồi.", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Lỗi kết nối: {str(e)[:200]}", ephemeral=True)
 
-# ═══════════════════════════════════════════════════════════════════════════════
-# 🔧 EXISTING TRIGGER COMMANDS
+# ══════════════════════════════════════════════════════════════════════════════
+#  EXISTING TRIGGER COMMANDS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 @bot.tree.command(name="addtrigger", description="Add a new auto-response trigger")
@@ -192,7 +234,7 @@ async def edittrigger(interaction: discord.Interaction, word: str, response: str
             save_triggers(triggers)
             await interaction.response.send_message(f"✏️ Updated: **{word}** → *{response}*", ephemeral=True)
             return
-    await interaction.response.send_message(f" Not found: **{word}**", ephemeral=True)
+    await interaction.response.send_message(f"❌ Not found: **{word}**", ephemeral=True)
 
 @bot.tree.command(name="triggerlist", description="List all configured triggers")
 async def triggerlist(interaction: discord.Interaction):
