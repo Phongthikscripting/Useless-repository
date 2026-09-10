@@ -2,12 +2,16 @@ import os
 import json
 import time
 import asyncio
+import random
+import string
 import threading
 import discord
+import aiohttp
 from discord import app_commands
 from discord.ext import commands
 from flask import Flask
-# ── Flask (keeps bot alive via UptimeRobot) ──────────────────────────────────
+
+# ── Flask (keeps bot alive via UptimeRobot/Render) ──────────────────────────
 app = Flask(__name__)
 
 @app.route("/")
@@ -30,6 +34,9 @@ def load_triggers():
 def save_triggers(triggers):
     with open(TRIGGERS_FILE, "w") as f:
         json.dump(triggers, f, indent=2)
+
+# ── Temp Mail storage ─────────────────────────────────────────────────────────
+user_temp_mails = {}
 
 # ── Discord bot ───────────────────────────────────────────────────────────────
 intents = discord.Intents.default()
@@ -64,44 +71,107 @@ async def on_ready():
     except Exception as e:
         print(f"❌ Failed to register commands: {e}")
 
-# ── /addtrigger ───────────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+#  TEMP MAIL COMMANDS
+# ═══════════════════════════════════════════════════════════════════════════════
+
+@bot.tree.command(name="tempmail", description="📧 Tạo email tạm thời (không cần mật khẩu)")
+async def tempmail(interaction: discord.Interaction):
+    username = ''.join(random.choices(string.ascii_lowercase + string.digits, k=10))
+    domain = "1secmail.com"
+    email = f"{username}@{domain}"
+    
+    user_temp_mails[interaction.user.id] = {"login": username, "domain": domain, "email": email}
+
+    embed = discord.Embed(
+        title="✉️ Email Tạm Thời Đã Tạo",
+        description=f"**Email:** `{email}`\n\n💡 Không cần mật khẩu!\nDùng `/checkmail` để kiểm tra thư đến.",
+        color=discord.Color.green()
+    )
+    embed.set_footer(text="️ Email tự động xóa sau 1 giờ không hoạt động")
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="checkmail", description="📬 Kiểm tra hộp thư tạm thời")
+async def checkmail(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    user_data = user_temp_mails.get(interaction.user.id)
+    
+    if not user_data:
+        await interaction.followup.send("❌ Bạn chưa tạo email nào. Dùng `/tempmail` trước!", ephemeral=True)
+        return
+
+    url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={user_data['login']}&domain={user_data['domain']}"
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                messages = await resp.json()
+                if not messages:
+                    await interaction.followup.send(f" Hộp thư `{user_data['email']}` đang trống.", ephemeral=True)
+                else:
+                    msg_list = "\n".join([f"**{m['subject']}**\n  ID: `{m['id']}` | Từ: {m['from']}" for m in messages[:5]])
+                    embed = discord.Embed(title=f"📬 Hộp thư: {user_data['email']}", description=msg_list, color=discord.Color.blue())
+                    embed.set_footer(text="Dùng /readmail <id> để đọc nội dung")
+                    await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.followup.send("❌ Lỗi khi kết nối API.", ephemeral=True)
+
+@bot.tree.command(name="readmail", description="📖 Đọc nội dung tin nhắn")
+@app_commands.describe(message_id="ID của tin nhắn (lấy từ /checkmail)")
+async def readmail(interaction: discord.Interaction, message_id: str):
+    await interaction.response.defer(ephemeral=True)
+    user_data = user_temp_mails.get(interaction.user.id)
+    
+    if not user_data:
+        await interaction.followup.send("❌ Bạn chưa tạo email nào.", ephemeral=True)
+        return
+
+    url = f"https://www.1secmail.com/api/v1/?action=readMessage&login={user_data['login']}&domain={user_data['domain']}&id={message_id}"
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as resp:
+            if resp.status == 200:
+                msg = await resp.json()
+                content = msg.get('textBody', msg.get('htmlBody', 'Không có nội dung'))[:1500]
+                
+                embed = discord.Embed(title=f"📧 {msg.get('subject', 'No Subject')}", description=content, color=discord.Color.purple())
+                embed.add_field(name=" Từ", value=msg.get('from', 'N/A'), inline=True)
+                embed.add_field(name="📅 Ngày", value=msg.get('date', 'N/A'), inline=True)
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.followup.send(" Không tìm thấy tin nhắn hoặc ID sai.", ephemeral=True)
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🔧 EXISTING TRIGGER COMMANDS
+# ═══════════════════════════════════════════════════════════════════════════════
+
 @bot.tree.command(name="addtrigger", description="Add a new auto-response trigger")
 @app_commands.describe(word="Word to trigger on", response="Bot reply message")
 async def addtrigger(interaction: discord.Interaction, word: str, response: str):
     triggers = load_triggers()
     if any(t["word"].lower() == word.lower() for t in triggers):
-        await interaction.response.send_message(
-            f"⚠️ Trigger already exists: **{word}**", ephemeral=True
-        )
+        await interaction.response.send_message(f"⚠️ Trigger already exists: **{word}**", ephemeral=True)
         return
     triggers.append({
         "word": word,
         "response": response,
         "active": True,
-        "added_by": interaction.user.display_name,   # 👈 lưu người tạo
+        "added_by": interaction.user.display_name,
     })
     save_triggers(triggers)
-    await interaction.response.send_message(
-        f"✅ Added: **{word}** → *{response}*", ephemeral=True
-    )
+    await interaction.response.send_message(f"✅ Added: **{word}** → *{response}*", ephemeral=True)
 
-# ── /removetrigger ────────────────────────────────────────────────────────────
 @bot.tree.command(name="removetrigger", description="Remove an existing trigger")
 @app_commands.describe(word="Trigger word to remove")
 async def removetrigger(interaction: discord.Interaction, word: str):
     triggers = load_triggers()
     new_triggers = [t for t in triggers if t["word"].lower() != word.lower()]
     if len(new_triggers) == len(triggers):
-        await interaction.response.send_message(
-            f"❌ Not found: **{word}**", ephemeral=True
-        )
+        await interaction.response.send_message(f"❌ Not found: **{word}**", ephemeral=True)
         return
     save_triggers(new_triggers)
-    await interaction.response.send_message(
-        f"🗑️ Removed: **{word}**", ephemeral=True
-    )
+    await interaction.response.send_message(f"🗑️ Removed: **{word}**", ephemeral=True)
 
-# ── /edittrigger ──────────────────────────────────────────────────────────────
 @bot.tree.command(name="edittrigger", description="Edit an existing trigger response")
 @app_commands.describe(word="Trigger word to edit", response="New reply message")
 async def edittrigger(interaction: discord.Interaction, word: str, response: str):
@@ -110,97 +180,76 @@ async def edittrigger(interaction: discord.Interaction, word: str, response: str
         if t["word"].lower() == word.lower():
             t["response"] = response
             save_triggers(triggers)
-            await interaction.response.send_message(
-                f"✏️ Updated: **{word}** → *{response}*", ephemeral=True
-            )
+            await interaction.response.send_message(f"✏️ Updated: **{word}** → *{response}*", ephemeral=True)
             return
-    await interaction.response.send_message(
-        f"❌ Not found: **{word}**", ephemeral=True
-    )
+    await interaction.response.send_message(f" Not found: **{word}**", ephemeral=True)
 
-# ── /triggerlist ──────────────────────────────────────────────────────────────
 @bot.tree.command(name="triggerlist", description="List all configured triggers")
 async def triggerlist(interaction: discord.Interaction):
     triggers = load_triggers()
     if not triggers:
-        await interaction.response.send_message(
-            "📭 No triggers yet. Use `/addtrigger`!", ephemeral=True
-        )
+        await interaction.response.send_message("📭 No triggers yet. Use `/addtrigger`!", ephemeral=True)
         return
     lines = []
     for t in triggers:
         status = "" if t.get("active", True) else " (Disabled)"
-        by = t.get("added_by", "unknown")   # 👈 trigger cũ chưa có field này
+        by = t.get("added_by", "unknown")
         lines.append(f"• **{t['word']}**: {t['response']}{status} — *by {by}*")
-    await interaction.response.send_message(
-        "**Triggers:**\n" + "\n".join(lines), ephemeral=True
-    )
+    await interaction.response.send_message("**Triggers:**\n" + "\n".join(lines), ephemeral=True)
 
-# ── /invitetovoicechannel ─────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════════════
+# 🎤 VOICE COMMANDS
+# ═══════════════════════════════════════════════════════════════════════════════
+
 @bot.tree.command(name="invitetovoicechannel", description="Invite Gamatoto to your voice channel")
 async def invitetovoicechannel(interaction: discord.Interaction):
     if interaction.user.voice is None or interaction.user.voice.channel is None:
-        await interaction.response.send_message(
-            "❌ You need to be in a voice channel first!", ephemeral=True
-        )
+        await interaction.response.send_message("❌ You need to be in a voice channel first!", ephemeral=True)
         return
 
     channel = interaction.user.voice.channel
     await interaction.response.defer(ephemeral=True)
 
     try:
-        # Join or move
         if interaction.guild.voice_client is not None:
             vc = interaction.guild.voice_client
             await vc.move_to(channel)
         else:
             vc = await channel.connect()
 
-        # Wait for voice connection to fully establish
         await asyncio.sleep(1)
 
-        # Stop anything currently playing
         if vc.is_playing():
             vc.stop()
 
-        # Play Gamatoto theme on loop
         def play_loop(error):
             if error:
                 print(f"❌ Player error: {error}")
                 return
             if vc.is_connected():
-                source = discord.PCMVolumeTransformer(
-                    discord.FFmpegPCMAudio("gamatoto.mp3"), volume=0.5
-                )
+                source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio("gamatoto.mp3"), volume=0.5)
                 vc.play(source, after=play_loop)
 
         if os.path.exists("gamatoto.mp3"):
-            source = discord.PCMVolumeTransformer(
-                discord.FFmpegPCMAudio("gamatoto.mp3"), volume=0.5
-            )
+            source = discord.PCMVolumeTransformer(discord.FFmpegPCMAudio("gamatoto.mp3"), volume=0.5)
             vc.play(source, after=play_loop)
         else:
             print("⚠️ gamatoto.mp3 not found")
 
-        await interaction.followup.send(
-            f"✅ Gamatoto is going to work in **{channel.name}**! 🐸⛏️", ephemeral=True
-        )
+        await interaction.followup.send(f"✅ Gamatoto is going to work in **{channel.name}**! 🐸️", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Error: {e}", ephemeral=True)
 
-# ── /stop ─────────────────────────────────────────────────────────────────────
 @bot.tree.command(name="stop", description="Stop Gamatoto and disconnect from voice")
 async def stop(interaction: discord.Interaction):
     vc = interaction.guild.voice_client
     if vc is None:
-        await interaction.response.send_message(
-            "❌ Gamatoto is not in a voice channel!", ephemeral=True
-        )
+        await interaction.response.send_message("❌ Gamatoto is not in a voice channel!", ephemeral=True)
         return
     await vc.disconnect()
     await interaction.response.send_message("👋 Gamatoto went home!", ephemeral=True)
 
-# ── Message trigger listener ──────────────────────────────────────────────────
+# ─ Message trigger listener ──────────────────────────────────────────────────
 @bot.event
 async def on_message(message: discord.Message):
     if message.author.bot:
