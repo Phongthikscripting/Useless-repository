@@ -88,45 +88,59 @@ async def on_ready():
         print(f"❌ Failed to register commands: {e}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  TEMP MAIL COMMANDS (Using 1secmail.com - Free & No API Key)
+#  TEMP MAIL COMMANDS (Using turbolite.xyz API)
 # ═══════════════════════════════════════════════════════════════════════════════
 
-@bot.tree.command(name="tempmail", description="📧 Tạo email tạm thời (1secmail)")
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36",
+    "Accept": "application/json, text/plain, */*"
+}
+
+@bot.tree.command(name="tempmail", description="📧 Tạo email tạm thời (turbolite.xyz)")
 async def tempmail(interaction: discord.Interaction):
     await interaction.response.defer(ephemeral=True)
-    
-    # Endpoint chuẩn để tạo email ngẫu nhiên của 1secmail
-    url = "https://www.1secmail.com/api/v1/?action=genRandomMailbox&count=1"
+    url = "https://turbolite.xyz/crt"
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
-                if resp.status == 200:
+            async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                print(f"[TempMail] Create Status: {resp.status}")
+                text_response = await resp.text()
+                print(f"[TempMail] Create Response: {text_response[:200]}") # Log để debug
+                
+                try:
                     data = await resp.json()
-                    if data and len(data) > 0:
-                        email = data[0]
-                        login, domain = email.split('@')
-                        
-                        mail_data = {"login": login, "domain": domain, "email": email}
+                    # Cố gắng tìm email trong các format phổ biến
+                    email = data.get("email") or data.get("address") or data.get("mail")
+                    
+                    if not email and isinstance(data, dict):
+                        # Nếu API trả về dict nhưng không có key rõ ràng, thử lấy value đầu tiên
+                        email = next(iter(data.values()), None)
+                    
+                    if email and "@" in str(email):
+                        email_str = str(email)
+                        login, domain = email_str.split('@')
+                        mail_data = {"login": login, "domain": domain, "email": email_str}
                         save_temp_mail(str(interaction.user.id), mail_data)
                         
                         embed = discord.Embed(
                             title="✉️ Email Tạm Thời Đã Tạo",
-                            description=f"**Email:** `{email}`\n\n💡 Dùng `/checkmail` để kiểm tra thư đến.",
+                            description=f"**Email:** `{email_str}`\n\n💡 Dùng `/checkmail` để kiểm tra.",
                             color=discord.Color.green()
                         )
-                        embed.set_footer(text="⚠️ Email tự động xóa sau 1 giờ không hoạt động")
                         await interaction.followup.send(embed=embed, ephemeral=True)
                     else:
-                        await interaction.followup.send("❌ API không trả về email", ephemeral=True)
-                else:
-                    await interaction.followup.send(f" API lỗi: {resp.status}", ephemeral=True)
+                        await interaction.followup.send(f"❌ API trả về dữ liệu lạ: `{text_response[:100]}`", ephemeral=True)
+                        
+                except aiohttp.ContentTypeError:
+                    await interaction.followup.send(f"❌ Lỗi: API trả về HTML thay vì JSON (Có thể bị Cloudflare chặn).\nResponse: `{text_response[:150]}`", ephemeral=True)
+                    
     except asyncio.TimeoutError:
         await interaction.followup.send("⏱️ Timeout: API không phản hồi sau 15 giây", ephemeral=True)
     except Exception as e:
-        await interaction.followup.send(f"❌ Lỗi: {str(e)[:200]}", ephemeral=True)
+        await interaction.followup.send(f"❌ Lỗi hệ thống: {str(e)[:200]}", ephemeral=True)
 
-@bot.tree.command(name="checkmail", description=" Kiểm tra hộp thư")
+@bot.tree.command(name="checkmail", description="📬 Kiểm tra hộp thư")
 @app_commands.describe(email="Email (để trống nếu dùng email đã tạo)")
 async def checkmail(interaction: discord.Interaction, email: str = None):
     await interaction.response.defer(ephemeral=True)
@@ -136,55 +150,55 @@ async def checkmail(interaction: discord.Interaction, email: str = None):
     if not email:
         user_data = get_temp_mail(user_id)
         if not user_data:
-            await interaction.followup.send(
-                "❌ Bạn chưa tạo email nào.\nDùng `/tempmail` để tạo email mới!", 
-                ephemeral=True
-            )
+            await interaction.followup.send("❌ Bạn chưa tạo email nào. Dùng `/tempmail`!", ephemeral=True)
             return
-        login = user_data.get('login')
-        domain = user_data.get('domain')
-        email = user_data.get('email')
+        email_addr = user_data.get('email')
     else:
-        if "@" not in email:
-            await interaction.followup.send("❌ Email không hợp lệ!", ephemeral=True)
-            return
-        login, domain = email.split('@')
+        email_addr = email
 
-    url = f"https://www.1secmail.com/api/v1/?action=getMessages&login={login}&domain={domain}"
+    url = f"https://turbolite.xyz/msg/{email_addr}"
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                print(f"[TempMail] List Status: {resp.status}")
+                
                 if resp.status == 200:
-                    messages = await resp.json()
-                    if not messages:
-                        await interaction.followup.send(
-                            f"📭 Hộp thư `{email}` đang trống.\nThư sẽ xuất hiện khi có email gửi đến!", 
-                            ephemeral=True
-                        )
-                    else:
-                        msg_list = ""
-                        for m in messages[:5]:
-                            msg_id = m.get('id', 'N/A')
-                            subject = m.get('subject', 'No subject')
-                            from_addr = m.get('from', 'Unknown')
-                            msg_list += f"**{subject}**\n  ID: `{msg_id}` | Từ: {from_addr}\n\n"
-                        
-                        embed = discord.Embed(
-                            title=f"📬 Hộp thư: {email}",
-                            description=f"Có **{len(messages)}** tin nhắn:\n\n{msg_list}",
-                            color=discord.Color.blue()
-                        )
-                        embed.set_footer(text="Dùng /readmail <id> để đọc nội dung")
-                        await interaction.followup.send(embed=embed, ephemeral=True)
+                    try:
+                        messages = await resp.json()
+                        if not messages or (isinstance(messages, dict) and not messages):
+                            await interaction.followup.send(f"📭 Hộp thư `{email_addr}` đang trống.", ephemeral=True)
+                        else:
+                            # Xử lý nếu API trả về list hoặc dict chứa list
+                            msg_list_data = messages if isinstance(messages, list) else messages.get("messages", [])
+                            
+                            if not msg_list_data:
+                                await interaction.followup.send(f"📭 Hộp thư `{email_addr}` đang trống.", ephemeral=True)
+                                return
+
+                            msg_list = ""
+                            for m in msg_list_data[:5]:
+                                msg_id = m.get('id') or m.get('messageId') or 'N/A'
+                                subject = m.get('subject') or 'No subject'
+                                from_addr = m.get('from') or 'Unknown'
+                                msg_list += f"**{subject}**\n  ID: `{msg_id}`\n\n"
+                            
+                            embed = discord.Embed(
+                                title=f"📬 Hộp thư: {email_addr}",
+                                description=f"Có **{len(msg_list_data)}** tin nhắn:\n\n{msg_list}",
+                                color=discord.Color.blue()
+                            )
+                            embed.set_footer(text="Dùng /readmail <id> để đọc nội dung")
+                            await interaction.followup.send(embed=embed, ephemeral=True)
+                    except aiohttp.ContentTypeError:
+                        await interaction.followup.send("❌ Lỗi: API trả về HTML thay vì JSON khi lấy danh sách mail.", ephemeral=True)
                 else:
                     await interaction.followup.send(f"❌ API trả về lỗi: {resp.status}", ephemeral=True)
-    except asyncio.TimeoutError:
-        await interaction.followup.send("⏱️ Timeout: API không phản hồi sau 15 giây", ephemeral=True)
+                    
     except Exception as e:
         await interaction.followup.send(f"❌ Lỗi kết nối: {str(e)[:200]}", ephemeral=True)
 
-@bot.tree.command(name="readmail", description=" Đọc nội dung tin nhắn")
+@bot.tree.command(name="readmail", description="📖 Đọc nội dung tin nhắn")
 @app_commands.describe(
     message_id="ID của tin nhắn (lấy từ /checkmail)",
     email="Email (để trống nếu dùng email đã tạo)"
@@ -199,38 +213,34 @@ async def readmail(interaction: discord.Interaction, message_id: str, email: str
         if not user_data:
             await interaction.followup.send("❌ Bạn chưa tạo email nào. Dùng `/tempmail`!", ephemeral=True)
             return
-        login = user_data.get('login')
-        domain = user_data.get('domain')
-        email = user_data.get('email')
+        email_addr = user_data.get('email')
     else:
-        if "@" not in email:
-            await interaction.followup.send("❌ Email không hợp lệ!", ephemeral=True)
-            return
-        login, domain = email.split('@')
-    
-    url = f"https://www.1secmail.com/api/v1/?action=readMessage&login={login}&domain={domain}&id={message_id}"
+        email_addr = email
+
+    url = f"https://turbolite.xyz/msg/{email_addr}/{message_id}"
     
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+            async with session.get(url, headers=HEADERS, timeout=aiohttp.ClientTimeout(total=15)) as resp:
                 if resp.status == 200:
-                    msg = await resp.json()
-                    content = msg.get('textBody', msg.get('body', 'Không có nội dung'))
-                    if len(content) > 2000:
-                        content = content[:1997] + "..."
-                    
-                    embed = discord.Embed(
-                        title=f"📧 {msg.get('subject', 'No Subject')}",
-                        description=content if content else "*Không có nội dung*",
-                        color=discord.Color.purple()
-                    )
-                    embed.add_field(name="📨 Từ", value=msg.get('from', 'N/A'), inline=True)
-                    embed.add_field(name="📅 Ngày", value=msg.get('date', 'N/A'), inline=True)
-                    await interaction.followup.send(embed=embed, ephemeral=True)
+                    try:
+                        msg = await resp.json()
+                        content = msg.get('textBody') or msg.get('body') or msg.get('content') or 'Không có nội dung'
+                        if len(str(content)) > 2000:
+                            content = str(content)[:1997] + "..."
+                        
+                        embed = discord.Embed(
+                            title=f"📧 {msg.get('subject', 'No Subject')}",
+                            description=str(content),
+                            color=discord.Color.purple()
+                        )
+                        embed.add_field(name="📨 Từ", value=msg.get('from', 'N/A'), inline=True)
+                        embed.add_field(name="📅 Ngày", value=msg.get('date', 'N/A'), inline=True)
+                        await interaction.followup.send(embed=embed, ephemeral=True)
+                    except aiohttp.ContentTypeError:
+                        await interaction.followup.send("❌ Lỗi: API trả về HTML thay vì JSON khi đọc mail.", ephemeral=True)
                 else:
                     await interaction.followup.send(f"❌ Không tìm thấy tin nhắn (lỗi {resp.status})", ephemeral=True)
-    except asyncio.TimeoutError:
-        await interaction.followup.send("⏱️ Timeout: API không phản hồi", ephemeral=True)
     except Exception as e:
         await interaction.followup.send(f"❌ Lỗi: {str(e)[:200]}", ephemeral=True)
 
